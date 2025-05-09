@@ -25,6 +25,7 @@ public class JwtUtil {
     public String generarToken(Usuario usuario) {
         return Jwts.builder()
                 .setSubject(usuario.getEmail())
+                .claim("id", usuario.getId())
                 .claim("name", usuario.getName())
                 .claim("code", usuario.getCode())
                 .claim("rol", usuario.getRol())

@@ -29,7 +29,9 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(
                                 "/api/admin/validar",
-                                "/api/usuario/validar"
+                                "/api/usuario/validar",
+                                "/ws/**"  // Permite el handshake inicial WebSocket
+
                         ).permitAll()
                         .requestMatchers("/api/**").authenticated()
                         .anyRequest().denyAll()

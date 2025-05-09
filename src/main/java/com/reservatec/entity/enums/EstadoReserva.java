@@ -2,7 +2,8 @@ package com.reservatec.entity.enums;
 
 public enum EstadoReserva {
     PENDIENTE,
-    CONFIRMADA,
+    ACTIVA,
+    COMPLETADA,
     CANCELADA,
-    COMPLETADA
+    CURSO
 }

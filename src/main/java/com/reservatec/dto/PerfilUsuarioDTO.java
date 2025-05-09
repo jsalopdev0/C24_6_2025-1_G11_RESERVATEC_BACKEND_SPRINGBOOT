@@ -9,4 +9,5 @@ public class PerfilUsuarioDTO {
     private String code;
     private String rol;
     private String carrera;
+    private Boolean activo;
 }

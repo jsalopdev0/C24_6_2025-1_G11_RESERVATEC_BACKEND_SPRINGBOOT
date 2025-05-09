@@ -7,12 +7,10 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.stereotype.Component;
 import org.springframework.lang.NonNull;
 import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
-import java.util.List;
 
 @Component
 public class JwtFilter extends OncePerRequestFilter {
@@ -45,13 +43,14 @@ public class JwtFilter extends OncePerRequestFilter {
                 String rol = claims.get("rol", String.class);
 
                 if (email != null && rol != null) {
-                    var authority = new SimpleGrantedAuthority("ROLE_" + rol);
-                    var authentication = new UsernamePasswordAuthenticationToken(email, null, List.of(authority));
-                    SecurityContextHolder.getContext().setAuthentication(authentication);
+                    Long id = claims.get("id", Long.class);
+                    CustomUserDetails userDetails = new CustomUserDetails(id, email, rol);
+                    var auth = new UsernamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());
+                    SecurityContextHolder.getContext().setAuthentication(auth);
                 }
 
             } catch (Exception e) {
-                System.out.println("❌ Token inválido: " + e.getMessage());
+                System.out.println("Token inválido: " + e.getMessage());
             }
         }
 

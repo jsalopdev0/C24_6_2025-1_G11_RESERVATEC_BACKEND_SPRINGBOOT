@@ -1,26 +1,28 @@
 package com.reservatec.entity;
 
-import com.reservatec.entity.enums.EstadoEspacio;
 import jakarta.persistence.*;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+import lombok.*;
 
-@Entity
-@Table(name = "espacios")
-@Data
+@Getter
+@Setter
 @NoArgsConstructor
 @AllArgsConstructor
+@Entity
+@Table(name = "espacios")
 public class Espacio {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Column(nullable = false)
     private String nombre;
 
+    @Column(nullable = false)
     private int aforo;
 
-    @Enumerated(EnumType.STRING)
-    private EstadoEspacio estado;
+    private String foto; // URL de imagen del espacio
+
+    @Column(nullable = false)
+    private Boolean activo = true; // Eliminación lógica
 }

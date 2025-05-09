@@ -19,7 +19,7 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public ResponseEntity<?> validarUsuario(GoogleUserDTO userDto, String rolEsperado) {
-        System.out.println("📥 Validando (" + rolEsperado + "): " + userDto.getEmail());
+        System.out.println("Validando (" + rolEsperado + "): " + userDto.getEmail());
 
         Optional<Usuario> optional = usuarioRepository.findByEmail(userDto.getEmail());
 
@@ -53,6 +53,7 @@ public class AuthServiceImpl implements AuthService {
         String jwt = jwtUtil.generarToken(usuario);
 
         return ResponseEntity.ok(new HashMap<>() {{
+            put("id", usuario.getId());
             put("token", jwt);
             put("name", usuario.getName());
             put("email", usuario.getEmail());

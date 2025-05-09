@@ -15,6 +15,7 @@ public class UsuarioMapper {
         dto.setCode(usuario.getCode());
         dto.setRol(usuario.getRol());
         dto.setCarrera(usuario.getCarrera());
+        dto.setActivo(usuario.getActivo());
         return dto;
     }
 }
