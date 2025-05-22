@@ -24,5 +24,4 @@ public class ReservaExpiradaLog {
     private Long horarioId;
     private LocalDate fecha;
     private LocalDateTime fechaExpiracion;
-
 }

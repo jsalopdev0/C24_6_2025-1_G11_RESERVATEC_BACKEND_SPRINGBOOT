@@ -3,7 +3,6 @@ package com.reservatec.entity;
 import com.reservatec.entity.enums.TipoBloqueo;
 import jakarta.persistence.*;
 import lombok.*;
-
 import java.time.LocalDate;
 
 @Getter
@@ -31,9 +30,19 @@ public class FechaBloqueada {
     @Column(nullable = false)
     private TipoBloqueo tipoBloqueo;
 
-    @ManyToOne(optional = false)
-    @JoinColumn(name = "espacio_id", nullable = false)
+    @ManyToOne(optional = true)
+    @JoinColumn(name = "espacio_id")
     private Espacio espacio;
+
+    @ManyToOne(optional = true)
+    @JoinColumn(name = "horario_id")
+    private Horario horario;
+
+    @Column(nullable = false)
+    private Boolean aplicaATodosLosEspacios = false;
+
+    @Column(nullable = false)
+    private Boolean aplicaATodosLosHorarios = false;
 
     @Column(nullable = false)
     private Boolean activo = true;

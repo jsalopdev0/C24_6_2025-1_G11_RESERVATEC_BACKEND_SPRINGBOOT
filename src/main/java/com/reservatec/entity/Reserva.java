@@ -5,7 +5,6 @@ import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
-
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
@@ -44,7 +43,7 @@ public class Reserva {
     private EstadoReserva estado = EstadoReserva.PENDIENTE;
 
     @Column(nullable = false)
-    private Boolean activo = true; // Eliminación lógica
+    private Boolean activo = true;
 
     @CreationTimestamp
     @Column(updatable = false)
@@ -57,7 +56,5 @@ public class Reserva {
     private boolean creadoPorAdmin = false;
 
     @Column(nullable = false)
-    private Boolean asistenciaConfirmada = false; // nuevo
-
-
+    private Boolean asistenciaConfirmada = false;
 }

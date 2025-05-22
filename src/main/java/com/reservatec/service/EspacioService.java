@@ -3,23 +3,47 @@ package com.reservatec.service;
 import com.reservatec.entity.Espacio;
 import java.util.List;
 
+/**
+ * Servicio para la gestión de espacios deportivos o físicos.
+ * Define las operaciones básicas para consulta, registro y actualización de espacios.
+ */
 public interface EspacioService {
 
-    // Lista todos los espacios registrados (activos e inactivos)
+    /**
+     * Lista todos los espacios registrados, incluyendo activos e inactivos.
+     *
+     * @return lista completa de espacios
+     */
     List<Espacio> listarTodos();
 
-    // Lista solo los espacios que están activos
+    /**
+     * Lista únicamente los espacios que están activos (activo = true).
+     *
+     * @return lista de espacios activos
+     */
     List<Espacio> listarActivos();
 
-    // Crea un espacio
+    /**
+     * Registra un nuevo espacio en el sistema.
+     *
+     * @param espacio objeto con los datos del espacio
+     * @return espacio creado
+     */
     Espacio guardar(Espacio espacio);
 
-    // Realiza una eliminación lógica del espacio por su ID (no elimina físicamente)
-    Espacio eliminar(Espacio espacio);
-
-    // Busca un espacio por su ID
+    /**
+     * Busca un espacio por su identificador único.
+     *
+     * @param id identificador del espacio
+     * @return objeto espacio encontrado o null si no existe
+     */
     Espacio buscarPorId(Long id);
 
-    // Actualiza un espacio existente
+    /**
+     * Actualiza los datos de un espacio existente.
+     *
+     * @param espacio objeto con la información actualizada
+     * @return espacio actualizado
+     */
     Espacio editar(Espacio espacio);
 }

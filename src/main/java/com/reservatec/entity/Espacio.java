@@ -24,5 +24,5 @@ public class Espacio {
     private String foto; // URL de imagen del espacio
 
     @Column(nullable = false)
-    private Boolean activo = true; // Eliminación lógica
+    private Boolean activo = true;
 }

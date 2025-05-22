@@ -13,6 +13,6 @@ public class UsuarioScheduler {
     @Scheduled(fixedDelayString = "${sincro.delay.ms}")
     public void ejecutarSincronizacion() {
         usuarioService.sincronizar();
-        System.out.println("✅ Sincronización ejecutada correctamente");
+        System.out.println("Sincronización ejecutada correctamente");
     }
 }

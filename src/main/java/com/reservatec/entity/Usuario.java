@@ -31,5 +31,5 @@ public class Usuario {
     private String foto;
 
     @Column(nullable = false)
-    private Boolean activo = true; // Por defecto siempre activo
+    private Boolean activo = true;
 }

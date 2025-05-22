@@ -6,6 +6,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+/**
+ * Controlador para recibir eventos webhook relacionados con usuarios.
+ * Protegido por una cabecera secreta para validar el origen autorizado.
+ */
 @RestController
 @RequestMapping("/api/webhook/usuario")
 public class WebhookUsuarioController {
@@ -21,27 +25,30 @@ public class WebhookUsuarioController {
         this.secret = secret;
     }
 
-    @SuppressWarnings("all")
+    /**
+     * Endpoint para recibir o actualizar un usuario desde un webhook externo.
+     *
+     * @param secretHeader cabecera secreta para validar la solicitud
+     * @param usuario       datos del usuario a guardar
+     * @return mensaje de éxito o acceso denegado
+     */
     @PostMapping
-    public ResponseEntity<String> recibirUsuario(@RequestHeader(WEBHOOK_SECRET_HEADER) String secretHeader,
-                                                 @RequestBody Usuario usuario) {
-        if (!secret.equals(secretHeader)) {
+    public ResponseEntity<String> recibirUsuario(
+            @RequestHeader(WEBHOOK_SECRET_HEADER) String secretHeader,
+            @RequestBody Usuario usuario) {
+
+        if (!esSolicitudAutorizada(secretHeader)) {
             return ResponseEntity.status(403).body("Acceso denegado");
         }
 
         usuarioService.guardar(usuario);
-        return ResponseEntity.ok("Usuario sincronizado");
+        return ResponseEntity.ok("Usuario sincronizado correctamente");
     }
 
-    @SuppressWarnings("all")
-    @DeleteMapping("/{code}")
-    public ResponseEntity<String> eliminarUsuario(@RequestHeader(WEBHOOK_SECRET_HEADER) String secretHeader,
-                                                  @PathVariable String code) {
-        if (!secret.equals(secretHeader)) {
-            return ResponseEntity.status(403).body("Acceso denegado");
-        }
-
-        usuarioService.eliminar(code);
-        return ResponseEntity.ok("Usuario eliminado");
+    /**
+     * Valida si la solicitud incluye el token secreto correcto.
+     */
+    private boolean esSolicitudAutorizada(String secretHeader) {
+        return secret.equals(secretHeader);
     }
 }

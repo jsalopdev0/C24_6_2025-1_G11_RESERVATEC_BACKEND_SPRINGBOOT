@@ -1,5 +1,8 @@
 package com.reservatec.service.impl;
 import java.time.DayOfWeek;
+
+import com.reservatec.dto.HorasPorDiaDeporteDTO;
+import com.reservatec.dto.ReservaCalendarioDTO;
 import com.reservatec.dto.ReservaRequestDTO;
 import com.reservatec.dto.ReservaResponseDTO;
 import com.reservatec.entity.*;
@@ -8,6 +11,8 @@ import com.reservatec.mapper.ReservaMapper;
 import com.reservatec.repository.*;
 import com.reservatec.service.ReservaService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+
 import org.redisson.api.RBucket;
 import org.redisson.api.RedissonClient;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
@@ -15,11 +20,13 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.time.*;
+import java.time.format.TextStyle;
 import java.util.*;
 import java.util.stream.Collectors;
-
 @Service
 @RequiredArgsConstructor
+@Slf4j
+
 public class ReservaServiceImpl implements ReservaService {
 
     private final ReservaRepository reservaRepository;
@@ -31,25 +38,63 @@ public class ReservaServiceImpl implements ReservaService {
     private final FechaBloqueadaRepository fechaBloqueadaRepository;
     private final ReservaMapper reservaMapper;
 
-
     private static final int TTL_MINUTOS = 3;
 
+    /**
+     * Lista todas las reservas (activas e inactivas).
+     */
     @Override
     public List<Reserva> listarTodas() {
-        return reservaRepository.findAll(); // TODAS (activas + inactivas)
+        return reservaRepository.findAll();
     }
 
+    /**
+     * Busca reservas por coincidencia parcial en nombre de usuario, código de usuario o nombre del espacio.
+     *
+     * @param texto texto de búsqueda
+     * @return lista de reservas en formato DTO
+     */
     @Override
     public List<ReservaResponseDTO> buscarPorTexto(String texto) {
-        List<Reserva> reservas = reservaRepository
-                .findByUsuarioNameContainingIgnoreCaseOrEspacioNombreContainingIgnoreCase(texto, texto);
-
-        return reservas.stream()
+        return reservaRepository
+                .findByUsuario_NameContainingIgnoreCaseOrUsuario_CodeContainingIgnoreCaseOrEspacio_NombreContainingIgnoreCase(
+                        texto, texto, texto
+                ).stream()
                 .map(reservaMapper::toDTO)
                 .toList();
     }
 
+    /**
+     * Lista las reservas activas en formato estructurado para ser usadas en un calendario.
+     *
+     * @return lista de reservas para calendario
+     */
+    @Override
+    public List<ReservaCalendarioDTO> listarParaCalendario() {
+        return reservaRepository.findByActivoTrue().stream()
+                .map(r -> new ReservaCalendarioDTO(
+                        r.getId(),
+                        r.getFecha() != null ? r.getFecha().toString() : "N/A",
+                        r.getEspacio() != null ? r.getEspacio().getNombre() : "Sin espacio",
+                        r.getUsuario() != null ? r.getUsuario().getCode() : "Sin usuario",
+                        (r.getHorario() != null && r.getHorario().getHoraInicio() != null)
+                                ? r.getHorario().getHoraInicio().toString() : "N/A",
+                        (r.getHorario() != null && r.getHorario().getHoraFin() != null)
+                                ? r.getHorario().getHoraFin().toString() : "N/A",
+                        r.getEstado() != null ? r.getEstado().name() : "N/A"
+                ))
+                .toList();
+    }
 
+
+    /**
+     * Crea una reserva temporal con validaciones estrictas de:
+     * - horario,
+     * - espacio,
+     * - restricciones por carrera y confirmación previa,
+     * - bloqueos del sistema (feriados, Redis, inasistencias, etc.).
+     * Solo reserva si no hay conflictos y si el usuario está habilitado.
+     */
     @Override
     @Transactional
     public Reserva crearReservaTemporal(ReservaRequestDTO dto, Usuario usuario, boolean creadoPorAdmin) {
@@ -63,10 +108,9 @@ public class ReservaServiceImpl implements ReservaService {
             throw new IllegalArgumentException("No se permiten reservas los días domingo.");
         }
 
-        // Cargar entidades completas primero
+        // Cargar entidades
         Espacio espacio = espacioRepository.findById(espacioId)
                 .orElseThrow(() -> new IllegalArgumentException("Espacio no encontrado"));
-
         if (!espacio.getActivo()) {
             throw new IllegalArgumentException("No se puede reservar un espacio inactivo.");
         }
@@ -74,113 +118,107 @@ public class ReservaServiceImpl implements ReservaService {
         Horario horario = horarioRepository.findById(horarioId)
                 .orElseThrow(() -> new IllegalArgumentException("Horario no encontrado"));
 
-        // Validar fechas bloqueadas (nuevo modelo con rango y espacio)
-        List<FechaBloqueada> bloqueos = fechaBloqueadaRepository
-                .findByEspacioAndActivoTrueAndIgnorarFalseAndFechaInicioLessThanEqualAndFechaFinGreaterThanEqual(
-                        espacio, fecha, fecha);
-        if (!bloqueos.isEmpty()) {
-            throw new IllegalArgumentException("No se puede reservar en esta fecha: " + bloqueos.get(0).getMotivo());
+        // Validar bloqueos
+        List<Optional<FechaBloqueada>> bloqueos = List.of(
+                fechaBloqueadaRepository.findFirstByActivoTrueAndIgnorarFalseAndAplicaATodosLosEspaciosTrueAndAplicaATodosLosHorariosTrueAndFechaInicioLessThanEqualAndFechaFinGreaterThanEqual(fecha, fecha),
+                fechaBloqueadaRepository.findFirstByEspacioAndActivoTrueAndIgnorarFalseAndAplicaATodosLosHorariosTrueAndFechaInicioLessThanEqualAndFechaFinGreaterThanEqual(espacio, fecha, fecha),
+                fechaBloqueadaRepository.findFirstByHorarioAndActivoTrueAndIgnorarFalseAndAplicaATodosLosEspaciosTrueAndFechaInicioLessThanEqualAndFechaFinGreaterThanEqual(horario, fecha, fecha),
+                fechaBloqueadaRepository.findFirstByEspacioAndHorarioAndActivoTrueAndIgnorarFalseAndFechaInicioLessThanEqualAndFechaFinGreaterThanEqual(espacio, horario, fecha, fecha)
+        );
+        for (Optional<FechaBloqueada> bloqueo : bloqueos) {
+            bloqueo.ifPresent(b -> {
+                throw new IllegalArgumentException("No puedes reservar: " + b.getMotivo() + " (" + b.getTipoBloqueo() + ")");
+            });
         }
 
-        // Validación de fecha pasada
+        // Validar hora actual vs inicio
         LocalDate today = LocalDate.now();
-        LocalTime currentTime = LocalTime.now();
-        if (fecha.isBefore(today)) {
-            throw new IllegalArgumentException("No se puede reservar en fechas pasadas.");
-        }
-
-        // Validación si la reserva es para hoy
+        LocalTime now = LocalTime.now();
         if (fecha.isEqual(today)) {
-            if (horario.getHoraInicio().isBefore(currentTime)) {
-                throw new IllegalArgumentException("No se puede reservar en un horario ya iniciado.");
-            }
+            LocalDateTime ahora = LocalDateTime.now();
+            LocalDateTime inicio = LocalDateTime.of(fecha, horario.getHoraInicio());
+            LocalDateTime fin = LocalDateTime.of(fecha, horario.getHoraFin());
 
-            Duration tiempoAntesDeIniciar = Duration.between(currentTime, horario.getHoraInicio());
-            if (tiempoAntesDeIniciar.toMinutes() < 30) {
-                throw new IllegalArgumentException("Debes reservar al menos 30 minutos antes de que inicie el horario.");
+            if (ahora.isAfter(inicio)) {
+                Optional<Reserva> existente = reservaRepository.findByEspacioIdAndHorarioIdAndFecha(espacioId, horarioId, fecha);
+
+                if (existente.isPresent()) {
+                    if (Boolean.TRUE.equals(existente.get().getAsistenciaConfirmada())) {
+                        throw new IllegalArgumentException("Este horario ya fue reservado y confirmado.");
+                    }
+                    if (ahora.isAfter(fin.minusMinutes(30))) {
+                        throw new IllegalArgumentException("No puedes reservar en un horario que ya está por terminar.");
+                    }
+                } else if (ahora.isAfter(fin.minusMinutes(30))) {
+                    throw new IllegalArgumentException("No puedes reservar en un horario que ya está por terminar.");
+                }
+
+            } else {
+                Duration tiempoAntes = Duration.between(ahora, LocalDateTime.of(fecha, horario.getHoraInicio()));
+                if (tiempoAntes.toMinutes() < 0) {
+                    throw new IllegalArgumentException("No se puede reservar en un horario ya iniciado.");
+                }
             }
         }
 
-
-        // Eliminar reservas PENDIENTES anteriores en misma fecha
-        List<Reserva> pendientes = reservaRepository.findByUsuarioIdAndEstado(usuarioId, EstadoReserva.PENDIENTE);
-
-        for (Reserva r : pendientes) {
-            // Guardar en log
-            ReservaExpiradaLog log = ReservaExpiradaLog.builder()
+        // Eliminar reservas pendientes del usuario en misma fecha
+        reservaRepository.findByUsuarioIdAndEstado(usuarioId, EstadoReserva.PENDIENTE).forEach(r -> {
+            reservaExpiradaLogRepository.save(ReservaExpiradaLog.builder()
                     .reservaId(r.getId())
                     .usuarioId(r.getUsuario().getId())
                     .espacioId(r.getEspacio().getId())
                     .horarioId(r.getHorario().getId())
                     .fecha(r.getFecha())
                     .fechaExpiracion(LocalDateTime.now())
-                    .build();
-            reservaExpiradaLogRepository.save(log);
-
-            // Eliminar reserva anterior
+                    .build());
             reservaRepository.delete(r);
+            redissonClient.getBucket("reserva:" + r.getEspacio().getId() + ":" + r.getHorario().getId() + ":" + r.getFecha()).delete();
+        });
 
-            // Borrar clave Redis relacionada
-            String prevKey = "reserva:" + r.getEspacio().getId()
-                    + ":" + r.getHorario().getId()
-                    + ":" + r.getFecha();
-            redissonClient.getBucket(prevKey).delete();
+        // Validar reserva vigente
+        if (!reservaRepository.findByUsuarioIdAndEstadoInAndActivoTrue(usuarioId, List.of(EstadoReserva.ACTIVA, EstadoReserva.CURSO)).isEmpty()) {
+            throw new IllegalArgumentException("Ya tienes una reserva vigente. No puedes crear otra.");
         }
 
-
-
-        // Validar si tiene una reserva ACTIVA futura
-        List<Reserva> activas = reservaRepository.findByUsuarioIdAndEstadoAndActivoTrue(usuarioId, EstadoReserva.ACTIVA);
-        if (!activas.isEmpty()) {
-            throw new IllegalArgumentException("Ya tienes una reserva activa. No puedes crear otra.");
+        // Validar si tuvo una COMPLETADA/CANCELADA hace menos de una semana
+        List<Reserva> recientes = reservaRepository.findTopByUsuarioIdAndEstadoInOrderByFechaDesc(usuarioId, List.of(EstadoReserva.COMPLETADA, EstadoReserva.CANCELADA));
+        if (!recientes.isEmpty() && LocalDate.now().isBefore(recientes.get(0).getFecha().plusWeeks(1))) {
+            throw new IllegalArgumentException("Solo puedes reservar nuevamente después de 7 días desde tu última cancelación o reserva completada.");
         }
 
+        // Validar colisión en DB
+        Optional<Reserva> reservaExistente = reservaRepository.findByEspacioIdAndHorarioIdAndFecha(espacioId, horarioId, fecha);
+        if (reservaExistente.isPresent()) {
+            Reserva existente = reservaExistente.get();
+            boolean bloquea = switch (existente.getEstado()) {
+                case ACTIVA, CURSO, PENDIENTE -> true;
+                default -> false;
+            };
 
-        // Validar si tuvo una COMPLETADA hace menos de 1 semana
-        List<EstadoReserva> estadosRestringidos = List.of(EstadoReserva.COMPLETADA, EstadoReserva.CANCELADA);
-        List<Reserva> recientes = reservaRepository.findTopByUsuarioIdAndEstadoInOrderByFechaDesc(usuarioId, estadosRestringidos);
+            boolean fueCanceladaPorNoConfirmar = existente.getEstado() == EstadoReserva.CANCELADA &&
+                    !Boolean.TRUE.equals(existente.getAsistenciaConfirmada());
 
-        if (!recientes.isEmpty()) {
-            LocalDate fechaUltimaReserva = recientes.get(0).getFecha();
-            LocalDate hoy = LocalDate.now();
-
-            if (hoy.isBefore(fechaUltimaReserva.plusWeeks(1))) {
-                throw new IllegalArgumentException("Solo puedes reservar nuevamente después de 7 días desde tu última cancelación o reserva completada.");
+            if (bloquea && !fueCanceladaPorNoConfirmar) {
+                throw new IllegalArgumentException("Este espacio ya está reservado en ese horario.");
             }
         }
 
-
-        // Verificar si otro usuario ya reservó el mismo espacio/horario
-        Optional<Reserva> reservaEspacio = reservaRepository.findByEspacioIdAndHorarioIdAndFecha(espacioId, horarioId, fecha);
-        if (reservaEspacio.isPresent()) {
-            EstadoReserva estado = reservaEspacio.get().getEstado();
-            if (estado == EstadoReserva.PENDIENTE || estado == EstadoReserva.ACTIVA)
-                throw new IllegalArgumentException("Este espacio ya está reservado en ese horario.");
-        }
-
-        // Verificar si hay reservas previas consecutivas en mismo espacio y fecha
-        List<Reserva> reservasEnEspacio = reservaRepository.findByEspacioIdAndFechaAndActivoTrue(espacioId, fecha);
-
-        for (Reserva r : reservasEnEspacio) {
+        // Validar restricción por carrera en horarios consecutivos
+        reservaRepository.findByEspacioIdAndFechaAndActivoTrue(espacioId, fecha).forEach(r -> {
             if ((r.getEstado() == EstadoReserva.ACTIVA || r.getEstado() == EstadoReserva.PENDIENTE)
-                    && !r.getUsuario().getId().equals(usuarioId)) { // No comparar contra sí mismo
+                    && !r.getUsuario().getId().equals(usuarioId)
+                    && r.getHorario().getHoraFin().equals(horario.getHoraInicio())) {
 
-                // Verificar si el horario es consecutivo
-                if (r.getHorario().getHoraFin().equals(horario.getHoraInicio())) {
+                String carrera1 = r.getUsuario().getCarrera();
+                String carrera2 = usuario.getCarrera();
 
-                    // Ahora comparamos carrera
-                    String carreraReservaExistente = r.getUsuario().getCarrera();
-                    String carreraNuevoUsuario = usuario.getCarrera(); // Suponiendo que Usuario tiene getCarrera()
-
-                    if (carreraReservaExistente != null && carreraReservaExistente.equalsIgnoreCase(carreraNuevoUsuario)) {
-                        throw new IllegalArgumentException("No puedes reservar inmediatamente después de otro alumno de tu misma carrera.");
-                    }
+                if (carrera1 != null && carrera1.equalsIgnoreCase(carrera2)) {
+                    throw new IllegalArgumentException("No puedes reservar inmediatamente después de otro alumno de tu misma carrera.");
                 }
             }
-        }
+        });
 
-
-        // Validar Redis
+        // Validar Redis (TTL)
         String key = "reserva:" + espacioId + ":" + horarioId + ":" + fecha;
         RBucket<String> bloque = redissonClient.getBucket(key);
         if (bloque.isExists()) {
@@ -190,25 +228,40 @@ public class ReservaServiceImpl implements ReservaService {
             }
         }
 
-
-        // Crear reserva
+        // Crear y guardar reserva
         Reserva nueva = new Reserva();
         nueva.setFecha(fecha);
         nueva.setEspacio(espacio);
         nueva.setHorario(horario);
         nueva.setUsuario(usuario);
         nueva.setActivo(true);
-        nueva.setEstado(EstadoReserva.PENDIENTE);
         nueva.setCreadoPorAdmin(creadoPorAdmin);
+
+        // Confirmación automática si reemplaza reserva cancelada por inasistencia
+        boolean esReemplazo = reservaExistente.isPresent()
+                && reservaExistente.get().getEstado() == EstadoReserva.CANCELADA
+                && !Boolean.TRUE.equals(reservaExistente.get().getAsistenciaConfirmada());
+
+        nueva.setEstado(esReemplazo || creadoPorAdmin ? EstadoReserva.ACTIVA : EstadoReserva.PENDIENTE);
+        nueva.setAsistenciaConfirmada(false); // Siempre se debe confirmar manualmente
+
         Reserva guardada = reservaRepository.save(nueva);
 
-        bloque.set(usuarioId.toString(), Duration.ofMinutes(TTL_MINUTOS)); //
-        notificarCambioReserva(usuarioId);
+        // TTL solo para usuarios (no admins)
+        if (!creadoPorAdmin) {
+            bloque.set(usuarioId.toString(), Duration.ofMinutes(TTL_MINUTOS));
+        }
 
+        notificarCambioReserva(usuarioId);
         return guardada;
     }
 
-
+    /**
+     * Elimina lógicamente una reserva (activo = false).
+     * No borra la reserva de la base de datos y notifica al frontend por WebSocket.
+     *
+     * @param id ID de la reserva a desactivar
+     */
     @Override
     public void eliminarLogicamente(Long id) {
         reservaRepository.findById(id).ifPresent(reserva -> {
@@ -218,6 +271,15 @@ public class ReservaServiceImpl implements ReservaService {
         });
     }
 
+    /**
+     * Confirma una reserva pendiente, validando:
+     * - Que el usuario no tenga otra activa.
+     * - Que hayan pasado al menos 7 días desde la última reserva completada.
+     * - Que la reserva esté dentro del tiempo límite de confirmación (TTL en Redis).
+     *
+     * @param reservaId ID de la reserva pendiente
+     * @return reserva confirmada y actualizada
+     */
     @Override
     @Transactional
     public Reserva confirmarReserva(Long reservaId) {
@@ -227,31 +289,40 @@ public class ReservaServiceImpl implements ReservaService {
         Long usuarioId = reserva.getUsuario().getId();
         LocalDate fecha = reserva.getFecha();
 
-        // Validar si ya tiene otra reserva activa
+        // Validar si ya tiene una reserva activa
         List<Reserva> activas = reservaRepository.findByUsuarioIdAndEstadoAndActivoTrue(usuarioId, EstadoReserva.ACTIVA);
-        if (!activas.isEmpty())
+        if (!activas.isEmpty()) {
             throw new IllegalStateException("Ya tienes una reserva activa.");
+        }
 
-        // Validar intervalo desde COMPLETADA
+        // Validar intervalo desde última COMPLETADA
         List<Reserva> completadas = reservaRepository.findByUsuarioIdAndEstadoOrderByFechaDesc(usuarioId, EstadoReserva.COMPLETADA);
-        if (!completadas.isEmpty() && fecha.isBefore(completadas.get(0).getFecha().plusWeeks(1)))
-            throw new IllegalStateException("Solo puedes reservar nuevamente después de 7 días desde tu última cancelación o reserva completada.");
+        if (!completadas.isEmpty() && fecha.isBefore(completadas.get(0).getFecha().plusWeeks(1))) {
+            throw new IllegalStateException("Solo puedes reservar nuevamente después de 7 días desde tu última reserva completada.");
+        }
 
-        // TTL
+        // Validar TTL en Redis
         String key = "reserva:" + reserva.getEspacio().getId() + ":" + reserva.getHorario().getId() + ":" + fecha;
         RBucket<String> redisReserva = redissonClient.getBucket(key);
-        if (!redisReserva.isExists())
+        if (!redisReserva.isExists()) {
             throw new IllegalStateException("El tiempo para confirmar expiró.");
+        }
 
         reserva.setEstado(EstadoReserva.ACTIVA);
         reservaRepository.save(reserva);
         redisReserva.delete();
 
         notificarCambioReserva(usuarioId);
-
         return reserva;
     }
 
+    /**
+     * Cancela una reserva si aún faltan al menos 30 minutos para su inicio.
+     * También notifica al usuario para detener el cronómetro de frontend.
+     *
+     * @param reservaId ID de la reserva a cancelar
+     * @return reserva cancelada
+     */
     @Override
     @Transactional
     public Reserva cancelarReserva(Long reservaId) {
@@ -261,33 +332,45 @@ public class ReservaServiceImpl implements ReservaService {
         LocalDateTime ahora = LocalDateTime.now();
         LocalDateTime inicio = LocalDateTime.of(reserva.getFecha(), reserva.getHorario().getHoraInicio());
 
-        if (Duration.between(ahora, inicio).toMinutes() < 30)
+        if (Duration.between(ahora, inicio).toMinutes() < 30) {
             throw new IllegalStateException("Solo puedes cancelar con al menos 30 minutos de anticipación.");
+        }
 
         reserva.setEstado(EstadoReserva.CANCELADA);
         reservaRepository.save(reserva);
-        notificarCambioReserva(reserva.getUsuario().getId());
-        messagingTemplate.convertAndSend("/topic/reservas/" + reserva.getUsuario().getId(), "cronometro");
 
-        return reserva; // Retorna la reserva para usarla luego
+        Long usuarioId = reserva.getUsuario().getId();
+        notificarCambioReserva(usuarioId);
+        messagingTemplate.convertAndSend("/topic/reservas/" + usuarioId, "cronometro");
+
+        return reserva;
     }
 
+    /**
+     * Elimina una reserva (soft delete) y notifica al frontend vía WebSocket.
+     *
+     * @param id ID de la reserva a eliminar
+     */
     @Override
     public void eliminar(Long id) {
-        reservaRepository.findById(id).ifPresent(r -> {
-            r.setActivo(false);
-            reservaRepository.save(r);
-            Long usuarioId = r.getUsuario().getId();
-            messagingTemplate.convertAndSend("/topic/reservas/" + usuarioId, "actualizar");  // Esto manda el evento
+        reservaRepository.findById(id).ifPresent(reserva -> {
+            reserva.setActivo(false);
+            reservaRepository.save(reserva);
+
+            Long usuarioId = reserva.getUsuario().getId();
+            messagingTemplate.convertAndSend("/topic/reservas/" + usuarioId, "actualizar");
         });
     }
 
-
+    /**
+     * Lista todas las reservas activas visibles de un usuario.
+     *
+     * @param usuarioId ID del usuario
+     * @return lista de reservas activas en estados permitidos
+     */
     @Override
     public List<Reserva> listarPorUsuario(Long usuarioId) {
-        if (usuarioId == null) {
-            return Collections.emptyList();
-        }
+        if (usuarioId == null) return Collections.emptyList();
 
         List<EstadoReserva> estadosVisibles = List.of(
                 EstadoReserva.ACTIVA,
@@ -299,12 +382,21 @@ public class ReservaServiceImpl implements ReservaService {
         return reservaRepository.findByUsuarioIdAndEstadoInAndActivoTrue(usuarioId, estadosVisibles);
     }
 
-
+    /**
+     * Busca una reserva por su ID.
+     *
+     * @param id ID de la reserva
+     * @return objeto Reserva o null si no se encuentra
+     */
     @Override
     public Reserva buscarPorId(Long id) {
         return reservaRepository.findById(id).orElse(null);
     }
 
+    /**
+     * Tarea programada que se ejecuta cada 3 segundos para liberar reservas
+     * en estado PENDIENTE cuyo TTL en Redis ha expirado.
+     */
     @Override
     @Scheduled(fixedRate = 3000)
     public void liberarReservasNoConfirmadas() {
@@ -315,8 +407,8 @@ public class ReservaServiceImpl implements ReservaService {
             RBucket<String> redisReserva = redissonClient.getBucket(key);
 
             if (!redisReserva.isExists()) {
-                // 1. Guardar log de expiración
-                ReservaExpiradaLog log = ReservaExpiradaLog.builder()
+                // 1. Registrar log de expiración (usa otro nombre para evitar conflicto con log de @Slf4j)
+                ReservaExpiradaLog logReserva = ReservaExpiradaLog.builder()
                         .reservaId(r.getId())
                         .usuarioId(r.getUsuario().getId())
                         .espacioId(r.getEspacio().getId())
@@ -324,19 +416,23 @@ public class ReservaServiceImpl implements ReservaService {
                         .fecha(r.getFecha())
                         .fechaExpiracion(LocalDateTime.now())
                         .build();
-                reservaExpiradaLogRepository.save(log);
+                reservaExpiradaLogRepository.save(logReserva);
 
-                // 2. Eliminar la reserva original
+                // 2. Eliminar la reserva
                 reservaRepository.delete(r);
 
-                // 3. Notificar al usuario
-                System.out.println("Reserva expirada eliminada y registrada en log: ID " + r.getId());
+                // 3. Notificar al frontend
                 notificarCambioReserva(r.getUsuario().getId());
+                log.info("🗑️ Reserva expirada y eliminada: ID {}", r.getId());
             }
         }
     }
 
-
+    /**
+     * Envía una notificación al usuario por WebSocket para actualizar sus reservas.
+     *
+     * @param usuarioId ID del usuario a notificar
+     */
     @Override
     public void notificarCambioReserva(Long usuarioId) {
         if (usuarioId != null) {
@@ -344,7 +440,12 @@ public class ReservaServiceImpl implements ReservaService {
         }
     }
 
-
+    /**
+     * Tarea programada que actualiza los estados de reservas automáticamente.
+     * - ACTIVA → CURSO si está en el horario actual.
+     * - CURSO → COMPLETADA si ya terminó.
+     * Se ejecuta cada 1 segundo para sincronizar con el cronómetro del frontend.
+     */
     @Scheduled(fixedRate = 1000)
     @Transactional
     public void actualizarEstadosReservas() {
@@ -357,37 +458,42 @@ public class ReservaServiceImpl implements ReservaService {
             Long usuarioId = r.getUsuario().getId();
 
             if (fin.isBefore(ahora) && r.getEstado() == EstadoReserva.CURSO) {
+                // Finaliza la reserva
                 r.setEstado(EstadoReserva.COMPLETADA);
                 reservaRepository.save(r);
 
-                // Notifica al frontend que terminó
                 messagingTemplate.convertAndSend("/topic/cronometro/" + usuarioId, Map.of(
                         "estado", "COMPLETADA",
                         "mensaje", "Reserva finalizada",
                         "segundos", 0
                 ));
-
                 notificarCambioReserva(usuarioId);
-                System.out.println("Reserva COMPLETADA: ID " + r.getId());
+                log.info("Reserva COMPLETADA: ID {}", r.getId());
+
             } else if (!ahora.isBefore(inicio) && !ahora.isAfter(fin) && r.getEstado() == EstadoReserva.ACTIVA) {
+                // Inicia la reserva
                 r.setEstado(EstadoReserva.CURSO);
                 reservaRepository.save(r);
 
-                // Notifica cambio a CURSO
                 Duration transcurrido = Duration.between(inicio, ahora);
                 messagingTemplate.convertAndSend("/topic/cronometro/" + usuarioId, Map.of(
                         "estado", "CURSO",
                         "mensaje", "Reserva en curso",
                         "segundos", transcurrido.getSeconds()
                 ));
-
                 notificarCambioReserva(usuarioId);
-                System.out.println("⏳ Reserva en CURSO: ID " + r.getId());
+                log.info("⏳ Reserva en CURSO: ID {}", r.getId());
             }
         }
     }
 
-
+    /**
+     * Devuelve el estado actual del cronómetro de reservas para el usuario autenticado.
+     * Informa si tiene una reserva próxima, en curso o ya finalizada.
+     *
+     * @param usuarioId ID del usuario
+     * @return mapa con estado ("ACTIVA", "CURSO", "COMPLETADA", "NINGUNA"), mensaje y segundos
+     */
     @Override
     public Map<String, Object> obtenerTiempoCronometro(Long usuarioId) {
         if (usuarioId == null) {
@@ -431,24 +537,44 @@ public class ReservaServiceImpl implements ReservaService {
     }
 
 
-
+    /**
+     * Devuelve la lista de IDs de horarios ocupados en una fecha y espacio específicos,
+     * tomando en cuenta reservas activas, en curso, pendientes y confirmadas, así como Redis TTL.
+     *
+     * @param espacioId         ID del espacio
+     * @param fecha             fecha a consultar
+     * @param usuarioIdActual   ID del usuario autenticado (para evitar bloqueo propio)
+     * @return lista de IDs de horarios ocupados
+     */
     @Override
     public List<Long> obtenerHorariosOcupados(Long espacioId, LocalDate fecha, Long usuarioIdActual) {
         Set<Long> horariosOcupados = new HashSet<>();
 
+        // 1. Por reservas en base de datos
         List<Reserva> reservas = reservaRepository.findByEspacioIdAndFechaAndActivoTrue(espacioId, fecha);
         for (Reserva r : reservas) {
-            // Si es PENDIENTE de otro usuario, bloquear
-            if (r.getEstado() == EstadoReserva.PENDIENTE && !r.getUsuario().getId().equals(usuarioIdActual)) {
-                horariosOcupados.add(r.getHorario().getId());
+            Long idHorario = r.getHorario().getId();
+            boolean esOtroUsuario = !r.getUsuario().getId().equals(usuarioIdActual);
+
+            if (esOtroUsuario) {
+                switch (r.getEstado()) {
+                    case PENDIENTE, ACTIVA, CURSO -> horariosOcupados.add(idHorario);
+                    case CANCELADA -> {
+                        if (Boolean.TRUE.equals(r.getAsistenciaConfirmada())) {
+                            horariosOcupados.add(idHorario);
+                        }
+                    }
+                }
             }
-            // Si es ACTIVA o CURSO, bloquear incluso si es del mismo usuario
-            else if (r.getEstado() == EstadoReserva.ACTIVA || r.getEstado() == EstadoReserva.CURSO) {
-                horariosOcupados.add(r.getHorario().getId());
+
+            // También bloquear si es propia pero confirmada y activa/curso
+            if ((r.getEstado() == EstadoReserva.ACTIVA || r.getEstado() == EstadoReserva.CURSO)
+                    && Boolean.TRUE.equals(r.getAsistenciaConfirmada())) {
+                horariosOcupados.add(idHorario);
             }
         }
 
-        // Validar también claves en Redis
+        // 2. Por TTL en Redis (reservas en proceso de confirmación)
         List<Horario> todosHorarios = horarioRepository.findAll();
         for (Horario h : todosHorarios) {
             String key = "reserva:" + espacioId + ":" + h.getId() + ":" + fecha;
@@ -464,9 +590,13 @@ public class ReservaServiceImpl implements ReservaService {
         return new ArrayList<>(horariosOcupados);
     }
 
-
-
-
+    /**
+     * Devuelve las fechas donde ya no hay horarios disponibles en el espacio.
+     * Considera como ocupados los horarios en estado PENDIENTE o ACTIVA.
+     *
+     * @param espacioId ID del espacio
+     * @return lista de fechas con todos los horarios ocupados
+     */
     @Override
     public List<LocalDate> obtenerFechasCompletas(Long espacioId) {
         List<Reserva> reservas = reservaRepository.findByEspacioIdAndActivoTrue(espacioId);
@@ -475,7 +605,7 @@ public class ReservaServiceImpl implements ReservaService {
                 .filter(r -> r.getEstado() == EstadoReserva.PENDIENTE || r.getEstado() == EstadoReserva.ACTIVA)
                 .collect(Collectors.groupingBy(Reserva::getFecha, Collectors.counting()));
 
-        long totalHorarios = horarioRepository.count(); // asumimos que todos aplican
+        long totalHorarios = horarioRepository.count(); // asumimos todos los horarios aplican
 
         return conteoPorFecha.entrySet().stream()
                 .filter(e -> e.getValue() >= totalHorarios)
@@ -483,24 +613,26 @@ public class ReservaServiceImpl implements ReservaService {
                 .toList();
     }
 
+    /**
+     * Cancela una reserva temporal pendiente, si aún no ha sido confirmada.
+     * Elimina la clave TTL de Redis solo si pertenece al usuario que la creó.
+     */
     @Override
     @Transactional
     public void cancelarTemporal(Long id) {
         Optional<Reserva> optionalReserva = reservaRepository.findById(id);
 
-        if (optionalReserva.isEmpty()) {
-            return; // Ya fue eliminada
-        }
+        if (optionalReserva.isEmpty()) return;
 
         Reserva reserva = optionalReserva.get();
 
         if (reserva.getEstado() == EstadoReserva.PENDIENTE) {
             Long usuarioId = reserva.getUsuario().getId();
 
-            // 1. Eliminar la reserva
+            // Eliminar reserva
             reservaRepository.delete(reserva);
 
-            // 2. Eliminar la clave de Redis SOLO si coincide el usuario
+            // Eliminar TTL de Redis si el usuario coincide
             String key = "reserva:" + reserva.getEspacio().getId()
                     + ":" + reserva.getHorario().getId()
                     + ":" + reserva.getFecha();
@@ -509,69 +641,170 @@ public class ReservaServiceImpl implements ReservaService {
             String valor = bucket.get();
 
             if (valor != null && valor.equals(usuarioId.toString())) {
-                bucket.delete(); // solo si él mismo bloqueó
+                bucket.delete();
             }
 
-            // 3. Notificar
+            // Notificar al usuario
             notificarCambioReserva(usuarioId);
         }
     }
 
-
+    /**
+     * Confirma la asistencia a una reserva en estado ACTIVA o CURSO.
+     * Aplica validación de tiempo límite de 10 minutos desde el inicio.
+     */
     @Override
     @Transactional
     public Reserva confirmarAsistencia(Long reservaId) {
         Reserva reserva = reservaRepository.findById(reservaId)
                 .orElseThrow(() -> new IllegalArgumentException("Reserva no encontrada"));
 
-        if (reserva.getAsistenciaConfirmada()) {
+        if (reserva.getEstado() != EstadoReserva.ACTIVA && reserva.getEstado() != EstadoReserva.CURSO) {
+            throw new IllegalStateException("Solo puedes confirmar asistencia a reservas activas o en curso.");
+        }
+
+        if (Boolean.TRUE.equals(reserva.getAsistenciaConfirmada())) {
             throw new IllegalStateException("La asistencia ya fue confirmada.");
         }
 
         LocalDateTime ahora = LocalDateTime.now();
+        LocalDateTime inicio = LocalDateTime.of(reserva.getFecha(), reserva.getHorario().getHoraInicio());
 
-        // En vez de hora de inicio, usamos la fecha de creación
-        if (ahora.isAfter(reserva.getFechaCreacion().plusMinutes(10))) {
+        // ✅ Si ya pasaron más de 10 min desde el inicio, solo permitir si se creó hace menos de 10 min
+        long segundosDesdeInicio = Duration.between(inicio, ahora).getSeconds();
+        long segundosDesdeCreacion = Duration.between(reserva.getFechaCreacion(), ahora).getSeconds();
+
+        if (segundosDesdeInicio > 600 && segundosDesdeCreacion > 600) {
             throw new IllegalStateException("El tiempo para confirmar asistencia ha expirado.");
         }
+
 
         reserva.setAsistenciaConfirmada(true);
         return reservaRepository.save(reserva);
     }
 
 
-
-    @Scheduled(fixedRate = 60000) // cada minuto
+    /**
+     * Tarea programada que verifica reservas sin asistencia confirmada y las cancela automáticamente
+     * si han pasado más de 10 minutos desde su inicio.
+     */
+    @Scheduled(fixedRate = 1000)
     @Transactional
     public void verificarInasistencias() {
-        List<Reserva> reservas = reservaRepository.findByEstadoIn(List.of(EstadoReserva.ACTIVA, EstadoReserva.CURSO));
+        List<Reserva> reservas = reservaRepository.findByEstadoIn(
+                List.of(EstadoReserva.ACTIVA, EstadoReserva.CURSO)
+        );
 
         LocalDateTime ahora = LocalDateTime.now();
 
         for (Reserva r : reservas) {
-            if (Boolean.FALSE.equals(r.getAsistenciaConfirmada())) {
-                LocalDateTime inicioReserva = LocalDateTime.of(r.getFecha(), r.getHorario().getHoraInicio());
+            if (Boolean.TRUE.equals(r.getAsistenciaConfirmada())) continue;
 
-                // Nueva validación
-                if (r.getFechaCreacion().isAfter(ahora.minusMinutes(10))) {
-                    // Si fue creada hace menos de 5 minutos, no la evaluamos todavía
-                    continue;
-                }
+            LocalDateTime inicio = LocalDateTime.of(r.getFecha(), r.getHorario().getHoraInicio());
 
-                if (ahora.isAfter(inicioReserva.plusMinutes(10))) {
-                    r.setEstado(EstadoReserva.CANCELADA);
+            // ⏳ Solo cancelar si pasaron más de 10 minutos desde el inicio Y
+            // la reserva fue creada hace más de 10 minutos (darle sus 10 min completos).
+            long segundosDesdeInicio = Duration.between(inicio, ahora).getSeconds();
+            long segundosDesdeCreacion = Duration.between(r.getFechaCreacion(), ahora).getSeconds();
 
-                    reservaRepository.save(r);
-
-                    notificarCambioReserva(r.getUsuario().getId());
-
-                    System.out.println("Reserva marcada CANCELADA por inasistencia: ID " + r.getId());
-                }
+            if (segundosDesdeInicio > 600 && segundosDesdeCreacion > 600) {
+                r.setEstado(EstadoReserva.CANCELADA);
+                reservaRepository.save(r);
+                notificarCambioReserva(r.getUsuario().getId());
+                log.info("Reserva CANCELADA por inasistencia: ID {}", r.getId());
             }
+
         }
     }
 
+    /**
+     * Calcula la cantidad total de horas reservadas por día (lunes a viernes) para cada deporte.
+     *
+     * @return lista de objetos DTO con nombre del deporte y mapa Día → Horas
+     */
+    @Override
+    public List<HorasPorDiaDeporteDTO> obtenerHorasPorDiaParaTodosLosDeportes() {
+        LocalDate inicioMes = LocalDate.now().withDayOfMonth(1);
+        LocalDate hoy = LocalDate.now();
+
+        List<Reserva> reservas = reservaRepository.findByFechaBetween(inicioMes, hoy);
+
+        Map<String, Map<DayOfWeek, Integer>> acumulado = new HashMap<>();
+
+        for (Reserva r : reservas) {
+            String deporte = r.getEspacio().getNombre();
+            DayOfWeek dia = r.getFecha().getDayOfWeek();
+            if (dia.getValue() > 5) continue; // Solo lunes a viernes
+
+            int horas = (int) Duration.between(r.getHorario().getHoraInicio(), r.getHorario().getHoraFin()).toHours();
+
+            acumulado
+                    .computeIfAbsent(deporte, k -> new EnumMap<>(DayOfWeek.class))
+                    .merge(dia, horas, Integer::sum);
+        }
+
+        return acumulado.entrySet().stream().map(entry -> {
+            String deporte = entry.getKey();
+            Map<DayOfWeek, Integer> valores = entry.getValue();
+
+            Map<String, Integer> horasPorDia = Arrays.stream(DayOfWeek.values())
+                    .filter(d -> d.getValue() <= 5)
+                    .collect(Collectors.toMap(
+                            d -> capitalize(d.getDisplayName(TextStyle.FULL, new Locale("es"))),
+                            d -> valores.getOrDefault(d, 0),
+                            (a, b) -> b,
+                            LinkedHashMap::new
+                    ));
+
+            return new HorasPorDiaDeporteDTO(deporte, horasPorDia);
+        }).collect(Collectors.toList());
+    }
+
+    /**
+     * Capitaliza la primera letra de un texto.
+     * Ej: "martes" → "Martes"
+     */
+    private String capitalize(String text) {
+        return text.substring(0, 1).toUpperCase() + text.substring(1).toLowerCase();
+    }
 
 
+    /**
+     * Cuenta la cantidad de reservas que coinciden con un estado específico en una fecha determinada.
+     *
+     * @param estado Estado de la reserva (ej. ACTIVA, CANCELADA)
+     * @param fecha  Fecha exacta a evaluar
+     * @return Número total de reservas que cumplen la condición
+     */
+    @Override
+    public long contarReservasPorEstadoYFecha(EstadoReserva estado, LocalDate fecha) {
+        return reservaRepository.countByEstadoAndFecha(estado, fecha);
+    }
 
+    /**
+     * Cuenta la cantidad de intentos de reserva fallidos (expirados) registrados en el mes actual.
+     * Se basa en los logs de expiración almacenados en `ReservaExpiradaLog`.
+     *
+     * @return Total de intentos fallidos de reserva en el mes en curso
+     */
+    @Override
+    public long contarIntentosReservaDelMes() {
+        LocalDate primerDiaDelMes = LocalDate.now().withDayOfMonth(1);
+        LocalDate hoy = LocalDate.now();
+        return reservaExpiradaLogRepository.countByFechaBetween(primerDiaDelMes, hoy);
+    }
+
+    /**
+     * Cuenta la cantidad de reservas con un estado determinado (ej. ACTIVA, COMPLETADA)
+     * dentro del rango de fechas correspondiente al mes actual.
+     *
+     * @param estado Estado de las reservas a contar
+     * @return Total de reservas con ese estado en el mes en curso
+     */
+    @Override
+    public long contarPorEstadoEnMes(EstadoReserva estado) {
+        LocalDate inicioMes = LocalDate.now().withDayOfMonth(1);
+        LocalDate finMes = inicioMes.withDayOfMonth(inicioMes.lengthOfMonth());
+        return reservaRepository.countByEstadoAndFechaBetween(estado, inicioMes, finMes);
+    }
 }

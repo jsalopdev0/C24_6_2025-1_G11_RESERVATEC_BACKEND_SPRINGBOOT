@@ -3,7 +3,6 @@ package com.reservatec.dto;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-
 import java.time.LocalDateTime;
 
 @Data
@@ -16,9 +15,8 @@ public class MensajeResponseDTO {
 
     public MensajeResponseDTO(String mensaje) {
         this.mensaje = mensaje;
-        this.timestamp = LocalDateTime.now(); // se genera automáticamente
+        this.timestamp = LocalDateTime.now();
     }
-
     public MensajeResponseDTO(String mensaje, Long reservaId) {
         this.mensaje = mensaje;
         this.reservaId = reservaId;

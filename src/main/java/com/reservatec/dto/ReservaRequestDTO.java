@@ -8,6 +8,5 @@ public class ReservaRequestDTO {
     private Long espacioId;
     private Long horarioId;
     private LocalDate fecha;
-    private String usuarioCode; // solo será usado por el admin
-
+    private String usuarioCode;
 }

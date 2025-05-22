@@ -28,8 +28,6 @@ public class ReservaMapper {
 
         dto.setAsistenciaConfirmada(reserva.getAsistenciaConfirmada());
 
-
-
         return dto;
     }
 }
