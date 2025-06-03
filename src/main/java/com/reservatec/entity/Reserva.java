@@ -20,6 +20,9 @@ public class Reserva {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Column(name = "codigo_reserva", unique = true, nullable = false, length = 25)
+    private String codigoReserva;
+
     @Column(nullable = false)
     private LocalDate fecha;
 

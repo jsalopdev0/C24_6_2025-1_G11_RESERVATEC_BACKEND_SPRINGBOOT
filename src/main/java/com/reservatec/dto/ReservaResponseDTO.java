@@ -8,6 +8,7 @@ import java.time.LocalDateTime;
 @Data
 public class ReservaResponseDTO {
     private Long id;
+    private String codigoReserva;
     private LocalDate fecha;
     private EstadoReserva estado;
 
@@ -23,7 +24,7 @@ public class ReservaResponseDTO {
 
     private LocalDateTime fechaCreacion;
     private LocalDateTime fechaActualizacion;
-
+    private Boolean activo;
     private Boolean asistenciaConfirmada;
 
 }

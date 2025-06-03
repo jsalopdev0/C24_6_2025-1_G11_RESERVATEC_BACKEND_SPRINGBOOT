@@ -79,13 +79,10 @@ public class ReservaController {
 
         List<ReservaResponseDTO> lista = (q != null && !q.isBlank())
                 ? reservaService.buscarPorTexto(q)
-                : reservaService.listarTodas().stream()
-                .map(reservaMapper::toDTO)
-                .toList();
+                : reservaService.listarTodas();
 
         return ResponseEntity.ok(lista);
     }
-
     /**
      * Lista únicamente las reservas activas (activo = true).
      * Utilizado normalmente para monitoreo o mantenimiento del sistema.
@@ -96,10 +93,11 @@ public class ReservaController {
     @GetMapping("/activas")
     @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<List<ReservaResponseDTO>> listarSoloActivas() {
-        return ResponseEntity.ok(reservaService.listarTodas().stream()
-                .filter(r -> Boolean.TRUE.equals(r.getActivo()))
-                .map(reservaMapper::toDTO)
-                .toList());
+        return ResponseEntity.ok(
+                reservaService.listarTodas().stream()
+                        .filter(r -> Boolean.TRUE.equals(r.getActivo()))
+                        .toList()
+        );
     }
 
     /**
@@ -413,7 +411,7 @@ public class ReservaController {
     public List<Map<String, Object>> getReservasPorEspacioDelMes() {
         LocalDate inicio = LocalDate.now().withDayOfMonth(1);
         LocalDate fin = LocalDate.now().withDayOfMonth(LocalDate.now().lengthOfMonth());
-        List<Object[]> resultados = reservaRepository.countReservasPorEspacioEnMes(inicio, fin);
+        List<Object[]> resultados = reservaRepository.countReservasCompletadasPorEspacioEnMes(inicio, fin);
 
         return resultados.stream().map(row -> Map.of(
                 "espacio", row[0],
@@ -474,4 +472,28 @@ public class ReservaController {
         return ResponseEntity.ok(total);
     }
 
+    /**
+     * Endpoint que devuelve un resumen mensual del número de reservas completadas,
+     * agrupadas por carrera del usuario, espacio reservado y mes, filtrado por año.
+     *
+     * @param anio Año para el cual se desea obtener el resumen. Por defecto, se utiliza el año actual.
+     * @return Lista de DTOs con el total de reservas por carrera, espacio y mes.
+     */
+    @GetMapping("/resumen-carrera-espacio-mensual")
+    public List<ReservasPorCarreraEspacioMesDTO> getResumenCarreraEspacioMensual(
+            @RequestParam(defaultValue = "#{T(java.time.Year).now().value}") int anio) {
+        return reservaService.obtenerResumenCarreraEspacioMensual(anio);
+    }
+
+    /**
+     * Endpoint que devuelve la cantidad total de reservas creadas por usuarios administradores.
+     * Esta métrica puede ser usada para evaluar el grado de intervención manual por parte del equipo administrador.
+     *
+     * @return Total de reservas creadas por administradores, envuelto en una respuesta HTTP 200 OK.
+     */
+    @GetMapping("/total-creadas-por-admin")
+    public ResponseEntity<Integer> obtenerTotalReservasCreadasPorAdmin() {
+        int total = reservaService.obtenerTotalReservasCreadasPorAdmin();
+        return ResponseEntity.ok(total);
+    }
 }

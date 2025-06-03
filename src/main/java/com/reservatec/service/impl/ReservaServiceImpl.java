@@ -1,10 +1,6 @@
 package com.reservatec.service.impl;
 import java.time.DayOfWeek;
-
-import com.reservatec.dto.HorasPorDiaDeporteDTO;
-import com.reservatec.dto.ReservaCalendarioDTO;
-import com.reservatec.dto.ReservaRequestDTO;
-import com.reservatec.dto.ReservaResponseDTO;
+import com.reservatec.dto.*;
 import com.reservatec.entity.*;
 import com.reservatec.entity.enums.EstadoReserva;
 import com.reservatec.mapper.ReservaMapper;
@@ -12,7 +8,6 @@ import com.reservatec.repository.*;
 import com.reservatec.service.ReservaService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-
 import org.redisson.api.RBucket;
 import org.redisson.api.RedissonClient;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
@@ -44,12 +39,14 @@ public class ReservaServiceImpl implements ReservaService {
      * Lista todas las reservas (activas e inactivas).
      */
     @Override
-    public List<Reserva> listarTodas() {
-        return reservaRepository.findAll();
+    public List<ReservaResponseDTO> listarTodas() {
+        List<Reserva> reservas = reservaRepository.findAll();
+        return reservas.stream()
+                .map(reservaMapper::toDTO)
+                .toList();
     }
-
     /**
-     * Busca reservas por coincidencia parcial en nombre de usuario, código de usuario o nombre del espacio.
+     * Busca reservas por coincidencia parcial en nombre de usuario, código de usuario, nombre del espacio o código de reserva.
      *
      * @param texto texto de búsqueda
      * @return lista de reservas en formato DTO
@@ -57,11 +54,33 @@ public class ReservaServiceImpl implements ReservaService {
     @Override
     public List<ReservaResponseDTO> buscarPorTexto(String texto) {
         return reservaRepository
-                .findByUsuario_NameContainingIgnoreCaseOrUsuario_CodeContainingIgnoreCaseOrEspacio_NombreContainingIgnoreCase(
-                        texto, texto, texto
+                .findByUsuario_NameContainingIgnoreCaseOrUsuario_CodeContainingIgnoreCaseOrEspacio_NombreContainingIgnoreCaseOrCodigoReservaContainingIgnoreCase(
+                        texto, texto, texto, texto
                 ).stream()
                 .map(reservaMapper::toDTO)
                 .toList();
+    }
+
+    /**
+     * Obtiene un resumen mensual del número de reservas realizadas,
+     * agrupadas por carrera, espacio y mes, para el año especificado.
+     *
+     * @param anio El año para el cual se desea obtener el resumen de reservas.
+     * @return Lista de objetos DTO que contienen el total de reservas por carrera, espacio y mes.
+     */
+    @Override
+    public List<ReservasPorCarreraEspacioMesDTO> obtenerResumenCarreraEspacioMensual(int anio) {
+        return reservaRepository.contarReservasPorCarreraEspacioYMes(anio);
+    }
+
+    /**
+     * Calcula el total de reservas que fueron creadas directamente por usuarios con rol de administrador.
+     *
+     * @return Número total de reservas registradas por administradores.
+     */
+    @Override
+    public int obtenerTotalReservasCreadasPorAdmin() {
+        return reservaRepository.contarReservasCreadasPorAdmin();
     }
 
     /**
@@ -71,9 +90,10 @@ public class ReservaServiceImpl implements ReservaService {
      */
     @Override
     public List<ReservaCalendarioDTO> listarParaCalendario() {
-        return reservaRepository.findByActivoTrue().stream()
+        return reservaRepository.findAllActivasConRelaciones().stream()
                 .map(r -> new ReservaCalendarioDTO(
                         r.getId(),
+                        r.getCodigoReserva() !=null ? r.getCodigoReserva() : "N/A",
                         r.getFecha() != null ? r.getFecha().toString() : "N/A",
                         r.getEspacio() != null ? r.getEspacio().getNombre() : "Sin espacio",
                         r.getUsuario() != null ? r.getUsuario().getCode() : "Sin usuario",
@@ -85,7 +105,6 @@ public class ReservaServiceImpl implements ReservaService {
                 ))
                 .toList();
     }
-
 
     /**
      * Crea una reserva temporal con validaciones estrictas de:
@@ -133,7 +152,6 @@ public class ReservaServiceImpl implements ReservaService {
 
         // Validar hora actual vs inicio
         LocalDate today = LocalDate.now();
-        LocalTime now = LocalTime.now();
         if (fecha.isEqual(today)) {
             LocalDateTime ahora = LocalDateTime.now();
             LocalDateTime inicio = LocalDateTime.of(fecha, horario.getHoraInicio());
@@ -199,7 +217,7 @@ public class ReservaServiceImpl implements ReservaService {
                     !Boolean.TRUE.equals(existente.getAsistenciaConfirmada());
 
             if (bloquea && !fueCanceladaPorNoConfirmar) {
-                throw new IllegalArgumentException("Este espacio ya está reservado en ese horario.");
+                throw new IllegalArgumentException("Este espacio ya está siendo reservado en este horario.");
             }
         }
 
@@ -237,6 +255,9 @@ public class ReservaServiceImpl implements ReservaService {
         nueva.setActivo(true);
         nueva.setCreadoPorAdmin(creadoPorAdmin);
 
+        // Generar código único antes de guardar
+        nueva.setCodigoReserva(generarCodigoReserva());
+
         // Confirmación automática si reemplaza reserva cancelada por inasistencia
         boolean esReemplazo = reservaExistente.isPresent()
                 && reservaExistente.get().getEstado() == EstadoReserva.CANCELADA
@@ -256,10 +277,14 @@ public class ReservaServiceImpl implements ReservaService {
         return guardada;
     }
 
+    private String generarCodigoReserva() {
+        return UUID.randomUUID().toString().replace("-", "").substring(0, 6).toUpperCase();
+    }
+
     /**
      * Elimina lógicamente una reserva (activo = false).
      * No borra la reserva de la base de datos y notifica al frontend por WebSocket.
-     *
+     *Ï
      * @param id ID de la reserva a desactivar
      */
     @Override
@@ -394,11 +419,11 @@ public class ReservaServiceImpl implements ReservaService {
     }
 
     /**
-     * Tarea programada que se ejecuta cada 3 segundos para liberar reservas
+     * Tarea programada que se ejecuta cada 20 segundos para liberar reservas
      * en estado PENDIENTE cuyo TTL en Redis ha expirado.
      */
     @Override
-    @Scheduled(fixedRate = 3000)
+    @Scheduled(fixedRate = 60000)
     public void liberarReservasNoConfirmadas() {
         List<Reserva> pendientes = reservaRepository.findByEstado(EstadoReserva.PENDIENTE);
 
@@ -444,9 +469,9 @@ public class ReservaServiceImpl implements ReservaService {
      * Tarea programada que actualiza los estados de reservas automáticamente.
      * - ACTIVA → CURSO si está en el horario actual.
      * - CURSO → COMPLETADA si ya terminó.
-     * Se ejecuta cada 1 segundo para sincronizar con el cronómetro del frontend.
+     * Se ejecuta cada 10 segundos para sincronizar con el cronómetro del frontend.
      */
-    @Scheduled(fixedRate = 1000)
+    @Scheduled(fixedRate = 10000)
     @Transactional
     public void actualizarEstadosReservas() {
         List<Reserva> reservas = reservaRepository.findByEstadoIn(List.of(EstadoReserva.ACTIVA, EstadoReserva.CURSO));
@@ -688,7 +713,7 @@ public class ReservaServiceImpl implements ReservaService {
      * Tarea programada que verifica reservas sin asistencia confirmada y las cancela automáticamente
      * si han pasado más de 10 minutos desde su inicio.
      */
-    @Scheduled(fixedRate = 1000)
+    @Scheduled(fixedRate = 30000)
     @Transactional
     public void verificarInasistencias() {
         List<Reserva> reservas = reservaRepository.findByEstadoIn(

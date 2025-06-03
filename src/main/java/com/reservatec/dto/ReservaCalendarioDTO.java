@@ -7,6 +7,7 @@ import lombok.Data;
 @AllArgsConstructor
 public class ReservaCalendarioDTO {
     private Long id;
+    private String codigoReserva;
     private String fecha;
     private String espacioNombre;
     private String usuarioCode;

@@ -1,9 +1,6 @@
 package com.reservatec.service;
 
-import com.reservatec.dto.HorasPorDiaDeporteDTO;
-import com.reservatec.dto.ReservaCalendarioDTO;
-import com.reservatec.dto.ReservaRequestDTO;
-import com.reservatec.dto.ReservaResponseDTO;
+import com.reservatec.dto.*;
 import com.reservatec.entity.Reserva;
 import com.reservatec.entity.Usuario;
 import com.reservatec.entity.enums.EstadoReserva;
@@ -97,7 +94,7 @@ public interface ReservaService {
      *
      * @return lista de reservas
      */
-    List<Reserva> listarTodas();
+    List<ReservaResponseDTO> listarTodas();
 
     /**
      * Busca una reserva por su ID.
@@ -170,5 +167,9 @@ public interface ReservaService {
     long contarReservasPorEstadoYFecha(EstadoReserva estado, LocalDate fecha);
     long contarIntentosReservaDelMes();
     long contarPorEstadoEnMes(EstadoReserva estado);
+
+    List<ReservasPorCarreraEspacioMesDTO> obtenerResumenCarreraEspacioMensual(int anio);
+
+    int obtenerTotalReservasCreadasPorAdmin();
 
 }

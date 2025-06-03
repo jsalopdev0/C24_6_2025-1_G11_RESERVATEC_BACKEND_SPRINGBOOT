@@ -131,4 +131,5 @@ public class UsuarioServiceImpl implements UsuarioService {
 
         log.info("Sincronización de usuarios finalizada. Creados: {}, Actualizados: {}, Ignorados: {}", creados, actualizados, ignorados);
     }
+
 }

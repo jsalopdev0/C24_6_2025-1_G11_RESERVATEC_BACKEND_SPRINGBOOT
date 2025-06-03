@@ -10,6 +10,7 @@ public class ReservaMapper {
     public ReservaResponseDTO toDTO(Reserva reserva) {
         ReservaResponseDTO dto = new ReservaResponseDTO();
         dto.setId(reserva.getId());
+        dto.setCodigoReserva(reserva.getCodigoReserva());
         dto.setFecha(reserva.getFecha());
         dto.setEstado(reserva.getEstado());
 
@@ -25,7 +26,7 @@ public class ReservaMapper {
 
         dto.setFechaCreacion(reserva.getFechaCreacion());
         dto.setFechaActualizacion(reserva.getFechaActualizacion());
-
+        dto.setActivo(reserva.getActivo());
         dto.setAsistenciaConfirmada(reserva.getAsistenciaConfirmada());
 
         return dto;

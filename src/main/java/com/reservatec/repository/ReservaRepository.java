@@ -1,7 +1,9 @@
 package com.reservatec.repository;
 
+import com.reservatec.dto.ReservasPorCarreraEspacioMesDTO;
 import com.reservatec.entity.Reserva;
 import com.reservatec.entity.enums.EstadoReserva;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -84,14 +86,18 @@ public interface ReservaRepository extends JpaRepository<Reserva, Long> {
     /**
      * Búsqueda parcial por nombre de usuario, código de usuario o nombre del espacio.
      */
-    List<Reserva> findByUsuario_NameContainingIgnoreCaseOrUsuario_CodeContainingIgnoreCaseOrEspacio_NombreContainingIgnoreCase(
-            String nombreUsuario, String codigoUsuario, String nombreEspacio);
-
+    List<Reserva> findByUsuario_NameContainingIgnoreCaseOrUsuario_CodeContainingIgnoreCaseOrEspacio_NombreContainingIgnoreCaseOrCodigoReservaContainingIgnoreCase(
+            String nombreUsuario,
+            String codigoUsuario,
+            String nombreEspacio,
+            String codigoReserva
+    );
     /**
      * Todas las reservas activas del sistema.
      */
-    List<Reserva> findByActivoTrue();
-
+    @EntityGraph(attributePaths = {"usuario", "espacio", "horario"})
+    @Query("SELECT r FROM Reserva r WHERE r.activo = true")
+    List<Reserva> findAllActivasConRelaciones();
     /**
      * Reservas entre dos fechas.
      */
@@ -110,22 +116,21 @@ public interface ReservaRepository extends JpaRepository<Reserva, Long> {
     // === CONSULTAS PERSONALIZADAS ===
 
     /**
-     * Cuenta de reservas agrupadas por espacio dentro de un rango de fechas.
-     * Devuelve pares (nombreEspacio, cantidad).
-     */
-    @Query("SELECT r.espacio.nombre, COUNT(r) FROM Reserva r WHERE r.fecha BETWEEN :inicio AND :fin GROUP BY r.espacio.nombre")
-
-    /**
-     * Cuenta la cantidad de reservas agrupadas por espacio, dentro de un rango de fechas.
+     * Cuenta la cantidad de reservas con estado COMPLETADA, agrupadas por espacio, dentro de un rango de fechas.
      * Este método retorna un listado de arreglos de objetos, donde:
      * - [0] → nombre del espacio (String)
-     * - [1] → cantidad de reservas (Long)
+     * - [1] → cantidad de reservas completadas (Long)
      *
      * @param inicio Fecha de inicio del rango (inclusive)
      * @param fin    Fecha de fin del rango (inclusive)
-     * @return Lista de tuplas [espacio_nombre, total_reservas]
+     * @return Lista de tuplas [espacio_nombre, total_reservas_completadas]
      */
-    List<Object[]> countReservasPorEspacioEnMes(@Param("inicio") LocalDate inicio, @Param("fin") LocalDate fin);
+    @Query("SELECT r.espacio.nombre, COUNT(r) " +
+            "FROM Reserva r " +
+            "WHERE r.fecha BETWEEN :inicio AND :fin " +
+            "AND r.estado = 'COMPLETADA' " +
+            "GROUP BY r.espacio.nombre")
+    List<Object[]> countReservasCompletadasPorEspacioEnMes(@Param("inicio") LocalDate inicio, @Param("fin") LocalDate fin);
 
     /**
      * Cuenta la cantidad de reservas con un estado específico en una fecha dada.
@@ -146,5 +151,33 @@ public interface ReservaRepository extends JpaRepository<Reserva, Long> {
      */
     long countByEstadoAndFechaBetween(EstadoReserva estado, LocalDate inicio, LocalDate fin);
 
+    /**
+     * Cuenta el número de reservas completadas agrupadas por carrera del usuario, nombre del espacio y mes,
+     * filtrando por año y estado COMPLETADA. Solo se consideran reservas activas.
+     *
+     * Este método es útil para generar reportes estadísticos mensuales que permitan analizar
+     * el uso de espacios deportivos por carrera a lo largo del año.
+     *
+     * @param anio Año específico sobre el cual se desea generar el resumen.
+     * @return Lista de DTOs con carrera, nombre del espacio, mes y cantidad de reservas.
+     */
+    @Query("SELECT new com.reservatec.dto.ReservasPorCarreraEspacioMesDTO(" +
+            "r.usuario.carrera, r.espacio.nombre, MONTH(r.fecha), COUNT(r)) " +
+            "FROM Reserva r " +
+            "WHERE r.activo = true AND YEAR(r.fecha) = :anio AND r.estado = com.reservatec.entity.enums.EstadoReserva.COMPLETADA " +
+            "GROUP BY r.usuario.carrera, r.espacio.nombre, MONTH(r.fecha) " +
+            "ORDER BY r.usuario.carrera, r.espacio.nombre, MONTH(r.fecha)")
+    List<ReservasPorCarreraEspacioMesDTO> contarReservasPorCarreraEspacioYMes(@Param("anio") int anio);
+
+    /**
+     * Cuenta la cantidad total de reservas que han sido creadas directamente por usuarios administradores.
+     * Solo se consideran reservas activas.
+     *
+     * Este indicador permite evaluar la intervención directa del administrador en el proceso de registro de reservas.
+     *
+     * @return Número total de reservas creadas por administradores.
+     */
+    @Query("SELECT COUNT(r) FROM Reserva r WHERE r.activo = true AND r.creadoPorAdmin = true")
+    int contarReservasCreadasPorAdmin();
 
 }
