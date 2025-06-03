@@ -9,6 +9,7 @@ import com.reservatec.service.ReservaService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RBucket;
+import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -17,6 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.*;
 import java.time.format.TextStyle;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
@@ -122,159 +124,167 @@ public class ReservaServiceImpl implements ReservaService {
         Long horarioId = dto.getHorarioId();
         LocalDate fecha = dto.getFecha();
 
-        // No permitir domingos
         if (fecha.getDayOfWeek() == DayOfWeek.SUNDAY) {
             throw new IllegalArgumentException("No se permiten reservas los días domingo.");
         }
 
-        // Cargar entidades
-        Espacio espacio = espacioRepository.findById(espacioId)
-                .orElseThrow(() -> new IllegalArgumentException("Espacio no encontrado"));
-        if (!espacio.getActivo()) {
-            throw new IllegalArgumentException("No se puede reservar un espacio inactivo.");
-        }
+        String lockKey = "lock:reserva:" + espacioId + ":" + horarioId + ":" + fecha;
+        RLock lock = redissonClient.getLock(lockKey);
+        boolean locked = false;
 
-        Horario horario = horarioRepository.findById(horarioId)
-                .orElseThrow(() -> new IllegalArgumentException("Horario no encontrado"));
+        try {
+            locked = lock.tryLock(5, 10, TimeUnit.SECONDS);
+            if (!locked) {
+                throw new IllegalStateException("El sistema está procesando otra reserva similar. Intenta nuevamente.");
+            }
 
-        // Validar bloqueos
-        List<Optional<FechaBloqueada>> bloqueos = List.of(
-                fechaBloqueadaRepository.findFirstByActivoTrueAndIgnorarFalseAndAplicaATodosLosEspaciosTrueAndAplicaATodosLosHorariosTrueAndFechaInicioLessThanEqualAndFechaFinGreaterThanEqual(fecha, fecha),
-                fechaBloqueadaRepository.findFirstByEspacioAndActivoTrueAndIgnorarFalseAndAplicaATodosLosHorariosTrueAndFechaInicioLessThanEqualAndFechaFinGreaterThanEqual(espacio, fecha, fecha),
-                fechaBloqueadaRepository.findFirstByHorarioAndActivoTrueAndIgnorarFalseAndAplicaATodosLosEspaciosTrueAndFechaInicioLessThanEqualAndFechaFinGreaterThanEqual(horario, fecha, fecha),
-                fechaBloqueadaRepository.findFirstByEspacioAndHorarioAndActivoTrueAndIgnorarFalseAndFechaInicioLessThanEqualAndFechaFinGreaterThanEqual(espacio, horario, fecha, fecha)
-        );
-        for (Optional<FechaBloqueada> bloqueo : bloqueos) {
-            bloqueo.ifPresent(b -> {
-                throw new IllegalArgumentException("No puedes reservar: " + b.getMotivo() + " (" + b.getTipoBloqueo() + ")");
-            });
-        }
+            // Cargar entidades
+            Espacio espacio = espacioRepository.findById(espacioId)
+                    .orElseThrow(() -> new IllegalArgumentException("Espacio no encontrado"));
+            if (!espacio.getActivo()) {
+                throw new IllegalArgumentException("No se puede reservar un espacio inactivo.");
+            }
 
-        // Validar hora actual vs inicio
-        LocalDate today = LocalDate.now();
-        if (fecha.isEqual(today)) {
-            LocalDateTime ahora = LocalDateTime.now();
-            LocalDateTime inicio = LocalDateTime.of(fecha, horario.getHoraInicio());
-            LocalDateTime fin = LocalDateTime.of(fecha, horario.getHoraFin());
+            Horario horario = horarioRepository.findById(horarioId)
+                    .orElseThrow(() -> new IllegalArgumentException("Horario no encontrado"));
 
-            if (ahora.isAfter(inicio)) {
-                Optional<Reserva> existente = reservaRepository.findByEspacioIdAndHorarioIdAndFecha(espacioId, horarioId, fecha);
+            // Validar bloqueos
+            List<Optional<FechaBloqueada>> bloqueos = List.of(
+                    fechaBloqueadaRepository.findFirstByActivoTrueAndIgnorarFalseAndAplicaATodosLosEspaciosTrueAndAplicaATodosLosHorariosTrueAndFechaInicioLessThanEqualAndFechaFinGreaterThanEqual(fecha, fecha),
+                    fechaBloqueadaRepository.findFirstByEspacioAndActivoTrueAndIgnorarFalseAndAplicaATodosLosHorariosTrueAndFechaInicioLessThanEqualAndFechaFinGreaterThanEqual(espacio, fecha, fecha),
+                    fechaBloqueadaRepository.findFirstByHorarioAndActivoTrueAndIgnorarFalseAndAplicaATodosLosEspaciosTrueAndFechaInicioLessThanEqualAndFechaFinGreaterThanEqual(horario, fecha, fecha),
+                    fechaBloqueadaRepository.findFirstByEspacioAndHorarioAndActivoTrueAndIgnorarFalseAndFechaInicioLessThanEqualAndFechaFinGreaterThanEqual(espacio, horario, fecha, fecha)
+            );
+            for (Optional<FechaBloqueada> bloqueo : bloqueos) {
+                bloqueo.ifPresent(b -> {
+                    throw new IllegalArgumentException("No puedes reservar: " + b.getMotivo() + " (" + b.getTipoBloqueo() + ")");
+                });
+            }
 
-                if (existente.isPresent()) {
-                    if (Boolean.TRUE.equals(existente.get().getAsistenciaConfirmada())) {
-                        throw new IllegalArgumentException("Este horario ya fue reservado y confirmado.");
-                    }
-                    if (ahora.isAfter(fin.minusMinutes(30))) {
+            // Validar hora actual vs inicio
+            LocalDate today = LocalDate.now();
+            if (fecha.isEqual(today)) {
+                LocalDateTime ahora = LocalDateTime.now();
+                LocalDateTime inicio = LocalDateTime.of(fecha, horario.getHoraInicio());
+                LocalDateTime fin = LocalDateTime.of(fecha, horario.getHoraFin());
+
+                if (ahora.isAfter(inicio)) {
+                    Optional<Reserva> existente = reservaRepository.findByEspacioIdAndHorarioIdAndFecha(espacioId, horarioId, fecha);
+
+                    if (existente.isPresent()) {
+                        if (Boolean.TRUE.equals(existente.get().getAsistenciaConfirmada())) {
+                            throw new IllegalArgumentException("Este horario ya fue reservado y confirmado.");
+                        }
+                        if (ahora.isAfter(fin.minusMinutes(30))) {
+                            throw new IllegalArgumentException("No puedes reservar en un horario que ya está por terminar.");
+                        }
+                    } else if (ahora.isAfter(fin.minusMinutes(30))) {
                         throw new IllegalArgumentException("No puedes reservar en un horario que ya está por terminar.");
                     }
-                } else if (ahora.isAfter(fin.minusMinutes(30))) {
-                    throw new IllegalArgumentException("No puedes reservar en un horario que ya está por terminar.");
-                }
 
-            } else {
-                Duration tiempoAntes = Duration.between(ahora, LocalDateTime.of(fecha, horario.getHoraInicio()));
-                if (tiempoAntes.toMinutes() < 0) {
-                    throw new IllegalArgumentException("No se puede reservar en un horario ya iniciado.");
+                } else {
+                    Duration tiempoAntes = Duration.between(ahora, LocalDateTime.of(fecha, horario.getHoraInicio()));
+                    if (tiempoAntes.toMinutes() < 0) {
+                        throw new IllegalArgumentException("No se puede reservar en un horario ya iniciado.");
+                    }
                 }
             }
-        }
 
-        // Eliminar reservas pendientes del usuario en misma fecha
-        reservaRepository.findByUsuarioIdAndEstado(usuarioId, EstadoReserva.PENDIENTE).forEach(r -> {
-            reservaExpiradaLogRepository.save(ReservaExpiradaLog.builder()
-                    .reservaId(r.getId())
-                    .usuarioId(r.getUsuario().getId())
-                    .espacioId(r.getEspacio().getId())
-                    .horarioId(r.getHorario().getId())
-                    .fecha(r.getFecha())
-                    .fechaExpiracion(LocalDateTime.now())
-                    .build());
-            reservaRepository.delete(r);
-            redissonClient.getBucket("reserva:" + r.getEspacio().getId() + ":" + r.getHorario().getId() + ":" + r.getFecha()).delete();
-        });
+            // Eliminar reservas pendientes del usuario en misma fecha
+            reservaRepository.findByUsuarioIdAndEstado(usuarioId, EstadoReserva.PENDIENTE).forEach(r -> {
+                reservaExpiradaLogRepository.save(ReservaExpiradaLog.builder()
+                        .reservaId(r.getId())
+                        .usuarioId(r.getUsuario().getId())
+                        .espacioId(r.getEspacio().getId())
+                        .horarioId(r.getHorario().getId())
+                        .fecha(r.getFecha())
+                        .fechaExpiracion(LocalDateTime.now())
+                        .build());
+                reservaRepository.delete(r);
+                redissonClient.getBucket("reserva:" + r.getEspacio().getId() + ":" + r.getHorario().getId() + ":" + r.getFecha()).delete();
+            });
 
-        // Validar reserva vigente
-        if (!reservaRepository.findByUsuarioIdAndEstadoInAndActivoTrue(usuarioId, List.of(EstadoReserva.ACTIVA, EstadoReserva.CURSO)).isEmpty()) {
-            throw new IllegalArgumentException("Ya tienes una reserva vigente. No puedes crear otra.");
-        }
-
-        // Validar si tuvo una COMPLETADA/CANCELADA hace menos de una semana
-        List<Reserva> recientes = reservaRepository.findTopByUsuarioIdAndEstadoInOrderByFechaDesc(usuarioId, List.of(EstadoReserva.COMPLETADA, EstadoReserva.CANCELADA));
-        if (!recientes.isEmpty() && LocalDate.now().isBefore(recientes.get(0).getFecha().plusWeeks(1))) {
-            throw new IllegalArgumentException("Solo puedes reservar nuevamente después de 7 días desde tu última cancelación o reserva completada.");
-        }
-
-        // Validar colisión en DB
-        Optional<Reserva> reservaExistente = reservaRepository.findByEspacioIdAndHorarioIdAndFecha(espacioId, horarioId, fecha);
-        if (reservaExistente.isPresent()) {
-            Reserva existente = reservaExistente.get();
-            boolean bloquea = switch (existente.getEstado()) {
-                case ACTIVA, CURSO, PENDIENTE -> true;
-                default -> false;
-            };
-
-            boolean fueCanceladaPorNoConfirmar = existente.getEstado() == EstadoReserva.CANCELADA &&
-                    !Boolean.TRUE.equals(existente.getAsistenciaConfirmada());
-
-            if (bloquea && !fueCanceladaPorNoConfirmar) {
-                throw new IllegalArgumentException("Este espacio ya está siendo reservado en este horario.");
+            if (!reservaRepository.findByUsuarioIdAndEstadoInAndActivoTrue(usuarioId, List.of(EstadoReserva.ACTIVA, EstadoReserva.CURSO)).isEmpty()) {
+                throw new IllegalArgumentException("Ya tienes una reserva vigente. No puedes crear otra.");
             }
-        }
 
-        // Validar restricción por carrera en horarios consecutivos
-        reservaRepository.findByEspacioIdAndFechaAndActivoTrue(espacioId, fecha).forEach(r -> {
-            if ((r.getEstado() == EstadoReserva.ACTIVA || r.getEstado() == EstadoReserva.PENDIENTE)
-                    && !r.getUsuario().getId().equals(usuarioId)
-                    && r.getHorario().getHoraFin().equals(horario.getHoraInicio())) {
+            List<Reserva> recientes = reservaRepository.findTopByUsuarioIdAndEstadoInOrderByFechaDesc(usuarioId, List.of(EstadoReserva.COMPLETADA, EstadoReserva.CANCELADA));
+            if (!recientes.isEmpty() && LocalDate.now().isBefore(recientes.get(0).getFecha().plusWeeks(1))) {
+                throw new IllegalArgumentException("Solo puedes reservar nuevamente después de 7 días desde tu última cancelación o reserva completada.");
+            }
 
-                String carrera1 = r.getUsuario().getCarrera();
-                String carrera2 = usuario.getCarrera();
+            Optional<Reserva> reservaExistente = reservaRepository.findByEspacioIdAndHorarioIdAndFecha(espacioId, horarioId, fecha);
+            if (reservaExistente.isPresent()) {
+                Reserva existente = reservaExistente.get();
+                boolean bloquea = switch (existente.getEstado()) {
+                    case ACTIVA, CURSO, PENDIENTE -> true;
+                    default -> false;
+                };
 
-                if (carrera1 != null && carrera1.equalsIgnoreCase(carrera2)) {
-                    throw new IllegalArgumentException("No puedes reservar inmediatamente después de otro alumno de tu misma carrera.");
+                boolean fueCanceladaPorNoConfirmar = existente.getEstado() == EstadoReserva.CANCELADA &&
+                        !Boolean.TRUE.equals(existente.getAsistenciaConfirmada());
+
+                if (bloquea && !fueCanceladaPorNoConfirmar) {
+                    throw new IllegalArgumentException("Este espacio ya está siendo reservado en este horario.");
                 }
             }
-        });
 
-        // Validar Redis (TTL)
-        String key = "reserva:" + espacioId + ":" + horarioId + ":" + fecha;
-        RBucket<String> bloque = redissonClient.getBucket(key);
-        if (bloque.isExists()) {
-            String reservandoId = bloque.get();
-            if (reservandoId != null && !reservandoId.equals(usuarioId.toString())) {
-                throw new IllegalStateException("Este espacio ya está siendo reservado temporalmente.");
+            reservaRepository.findByEspacioIdAndFechaAndActivoTrue(espacioId, fecha).forEach(r -> {
+                if ((r.getEstado() == EstadoReserva.ACTIVA || r.getEstado() == EstadoReserva.PENDIENTE)
+                        && !r.getUsuario().getId().equals(usuarioId)
+                        && r.getHorario().getHoraFin().equals(horario.getHoraInicio())) {
+
+                    String carrera1 = r.getUsuario().getCarrera();
+                    String carrera2 = usuario.getCarrera();
+
+                    if (carrera1 != null && carrera1.equalsIgnoreCase(carrera2)) {
+                        throw new IllegalArgumentException("No puedes reservar inmediatamente después de otro alumno de tu misma carrera.");
+                    }
+                }
+            });
+
+            String key = "reserva:" + espacioId + ":" + horarioId + ":" + fecha;
+            RBucket<String> bloque = redissonClient.getBucket(key);
+            if (bloque.isExists()) {
+                String reservandoId = bloque.get();
+                if (reservandoId != null && !reservandoId.equals(usuarioId.toString())) {
+                    throw new IllegalStateException("Este espacio ya está siendo reservado temporalmente.");
+                }
+            }
+
+            Reserva nueva = new Reserva();
+            nueva.setFecha(fecha);
+            nueva.setEspacio(espacio);
+            nueva.setHorario(horario);
+            nueva.setUsuario(usuario);
+            nueva.setActivo(true);
+            nueva.setCreadoPorAdmin(creadoPorAdmin);
+            nueva.setCodigoReserva(generarCodigoReserva());
+
+            boolean esReemplazo = reservaExistente.isPresent()
+                    && reservaExistente.get().getEstado() == EstadoReserva.CANCELADA
+                    && !Boolean.TRUE.equals(reservaExistente.get().getAsistenciaConfirmada());
+
+            nueva.setEstado(esReemplazo || creadoPorAdmin ? EstadoReserva.ACTIVA : EstadoReserva.PENDIENTE);
+            nueva.setAsistenciaConfirmada(false);
+
+            Reserva guardada = reservaRepository.save(nueva);
+
+            if (!creadoPorAdmin) {
+                bloque.set(usuarioId.toString(), Duration.ofMinutes(TTL_MINUTOS));
+            }
+
+            notificarCambioReserva(usuarioId);
+            return guardada;
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Error al intentar bloquear la reserva. Intenta nuevamente.");
+        } finally {
+            if (locked && lock.isHeldByCurrentThread()) {
+                lock.unlock();
             }
         }
-
-        // Crear y guardar reserva
-        Reserva nueva = new Reserva();
-        nueva.setFecha(fecha);
-        nueva.setEspacio(espacio);
-        nueva.setHorario(horario);
-        nueva.setUsuario(usuario);
-        nueva.setActivo(true);
-        nueva.setCreadoPorAdmin(creadoPorAdmin);
-
-        // Generar código único antes de guardar
-        nueva.setCodigoReserva(generarCodigoReserva());
-
-        // Confirmación automática si reemplaza reserva cancelada por inasistencia
-        boolean esReemplazo = reservaExistente.isPresent()
-                && reservaExistente.get().getEstado() == EstadoReserva.CANCELADA
-                && !Boolean.TRUE.equals(reservaExistente.get().getAsistenciaConfirmada());
-
-        nueva.setEstado(esReemplazo || creadoPorAdmin ? EstadoReserva.ACTIVA : EstadoReserva.PENDIENTE);
-        nueva.setAsistenciaConfirmada(false); // Siempre se debe confirmar manualmente
-
-        Reserva guardada = reservaRepository.save(nueva);
-
-        // TTL solo para usuarios (no admins)
-        if (!creadoPorAdmin) {
-            bloque.set(usuarioId.toString(), Duration.ofMinutes(TTL_MINUTOS));
-        }
-
-        notificarCambioReserva(usuarioId);
-        return guardada;
     }
 
     private String generarCodigoReserva() {
