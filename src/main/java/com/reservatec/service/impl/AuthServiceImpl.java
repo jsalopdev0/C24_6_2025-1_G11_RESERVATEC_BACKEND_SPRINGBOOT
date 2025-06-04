@@ -10,6 +10,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
@@ -73,15 +74,16 @@ public class AuthServiceImpl implements AuthService {
 
         String jwt = jwtUtil.generarToken(usuario);
 
-        return ResponseEntity.ok(Map.of(
-                "id", usuario.getId(),
-                "token", jwt,
-                "name", usuario.getName(),
-                "email", usuario.getEmail(),
-                "foto", usuario.getFoto(),
-                "code", usuario.getCode(),
-                "rol", usuario.getRol(),
-                "carrera", usuario.getCarrera()
-        ));
+        Map<String, Object> body = new HashMap<>();
+        body.put("id", usuario.getId());
+        body.put("token", jwt);
+        body.put("name", usuario.getName());
+        body.put("email", usuario.getEmail());
+        body.put("foto", usuario.getFoto());
+        body.put("code", usuario.getCode());
+        body.put("rol", usuario.getRol());
+        body.put("carrera", usuario.getCarrera());
+
+        return ResponseEntity.ok(body);
     }
 }

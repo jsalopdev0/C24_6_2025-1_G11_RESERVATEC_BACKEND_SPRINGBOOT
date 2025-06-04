@@ -30,8 +30,7 @@ public class JwtUtil {
                 .claim("code", usuario.getCode())
                 .claim("rol", usuario.getRol())
                 .claim("carrera", usuario.getCarrera())
-                .claim("foto", usuario.getFoto())
-                .setIssuedAt(new Date())
+                .claim("foto", usuario.getFoto() != null ? usuario.getFoto() : "")                .setIssuedAt(new Date())
                 .setExpiration(new Date(System.currentTimeMillis() + expirationMs))
                 .signWith(key, SignatureAlgorithm.HS256)
                 .compact();
