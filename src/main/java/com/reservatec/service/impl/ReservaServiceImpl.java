@@ -231,14 +231,26 @@ public class ReservaServiceImpl implements ReservaService {
 
             reservaRepository.findByEspacioIdAndFechaAndActivoTrue(espacioId, fecha).forEach(r -> {
                 if ((r.getEstado() == EstadoReserva.ACTIVA || r.getEstado() == EstadoReserva.PENDIENTE)
-                        && !r.getUsuario().getId().equals(usuarioId)
-                        && r.getHorario().getHoraFin().equals(horario.getHoraInicio())) {
+                        && !r.getUsuario().getId().equals(usuarioId)) {
 
                     String carrera1 = r.getUsuario().getCarrera();
                     String carrera2 = usuario.getCarrera();
 
                     if (carrera1 != null && carrera1.equalsIgnoreCase(carrera2)) {
-                        throw new IllegalArgumentException("No puedes reservar inmediatamente después de otro alumno de tu misma carrera.");
+                        LocalTime inicioNueva = horario.getHoraInicio();
+                        LocalTime finNueva = horario.getHoraFin();
+                        LocalTime inicioExistente = r.getHorario().getHoraInicio();
+                        LocalTime finExistente = r.getHorario().getHoraFin();
+
+                        // Bloquea si nueva empieza justo después de otra de la misma carrera
+                        if (inicioNueva.equals(finExistente)) {
+                            throw new IllegalArgumentException("No puedes reservar inmediatamente después de otro alumno de tu misma carrera.");
+                        }
+
+                        // Bloquea si nueva termina justo antes de otra de la misma carrera
+                        if (finNueva.equals(inicioExistente)) {
+                            throw new IllegalArgumentException("No puedes reservar inmediatamente antes de otro alumno de tu misma carrera.");
+                        }
                     }
                 }
             });
