@@ -30,8 +30,10 @@ public class SecurityConfig {
                         .requestMatchers(
                                 "/api/admin/validar",
                                 "/api/usuario/validar",
-                                "/ws/**"  // Permite el handshake inicial WebSocket
-
+                                "/v3/api-docs/**",                 // Documentación OpenAPI JSON
+                                "/swagger-ui.html",               // Página principal de Swagger UI
+                                "/swagger-ui/**",                 // Recursos estáticos del UI
+                                "/ws/**"                          // WebSocket handshake
                         ).permitAll()
                         .requestMatchers("/api/**").authenticated()
                         .anyRequest().denyAll()
